@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Jamabandi → SQLite DB (GitHub Pages)</title>
+  <title>Jamabandi + Rules → SQLite DB (GitHub Pages)</title>
 
   <!-- pdf.js -->
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.js"></script>
-  <!-- sql.js (SQLite in browser) -->
+  <!-- sql.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.min.js"></script>
 
   <style>
@@ -28,7 +28,7 @@
     @media(min-width:980px){.grid{grid-template-columns:1fr 1.2fr}}
     .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:14px}
     .row{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
-    input,textarea{
+    input,textarea,select{
       width:100%;padding:10px;border-radius:12px;border:1px solid var(--border);
       background:#0b162c;color:var(--text);outline:none
     }
@@ -57,14 +57,15 @@
       padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#0b162c;color:var(--muted);
       font-size:12px
     }
+    .half{flex:1;min-width:240px}
   </style>
 </head>
 
 <body>
   <header class="top">
     <div>
-      <h1>Jamabandi → SQLite DB (Browser)</h1>
-      <p class="muted">Upload PDF → auto extract → query by heading/owner/khasra → download .db</p>
+      <h1>Jamabandi + Rules → SQLite DB (Browser)</h1>
+      <p class="muted">Load Rule PDF from GitHub → Upload Jamabandi → Query → Download .db</p>
       <div class="pill" id="dbState">DB: loading…</div>
     </div>
     <div class="actions">
@@ -75,7 +76,21 @@
 
   <main class="grid">
     <section class="card">
-      <h2>1) Upload Jamabandi PDF</h2>
+      <h2>1) Load Rule PDF from GitHub (Option 2)</h2>
+      <div class="row">
+        <div class="half">
+          <label class="muted small">Select rule PDF (from /rules/ folder in your repo)</label>
+          <select id="ruleSelect"></select>
+        </div>
+        <div>
+          <button id="btnLoadRule">Load Rule PDF</button>
+        </div>
+      </div>
+      <div id="ruleStatus" class="status muted"></div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:14px 0">
+
+      <h2>2) Upload Jamabandi PDF</h2>
       <input type="file" id="filePdf" accept="application/pdf" />
 
       <div class="row">
@@ -84,12 +99,12 @@
         <label class="chk"><input type="checkbox" id="chkExtractEntities" checked /> Extract khasra/owners</label>
       </div>
 
-      <button id="btnImport" disabled>Import into DB</button>
+      <button id="btnImport" disabled>Import Jamabandi into DB</button>
       <div id="importStatus" class="status muted"></div>
     </section>
 
     <section class="card">
-      <h2>2) Fetch / Query Logic</h2>
+      <h2>3) Fetch / Query Logic</h2>
 
       <div class="tabs">
         <button class="tab active" data-tab="tabHeading">By Heading</button>
@@ -103,12 +118,12 @@
           <input id="headingKey" placeholder="Heading key (e.g., जमाबंदी / खसरा / मालिक / 121)" />
           <button id="btnGetHeading">Fetch</button>
         </div>
-        <p class="muted small">Tip: after import, try keys like: जमाबंदी, खसरा, मालिक, खतौनी.</p>
+        <p class="muted small">You can query both Rule PDF + Jamabandi after importing.</p>
       </div>
 
       <div id="tabOwner" class="tabpane">
         <div class="row">
-          <input id="ownerName" placeholder="Owner name (e.g., Narender Singh / नरेंद्र / कुलविंदर)" />
+          <input id="ownerName" placeholder="Owner name (e.g., Narender / नरेंद्र / कुलविंदर)" />
           <button id="btnOwner">Search</button>
         </div>
       </div>
@@ -138,7 +153,7 @@
   </main>
 
   <footer class="foot muted">
-    Works best for text-based PDFs. For scanned Jamabandi, you’ll need OCR later.
+    GitHub Pages = static. Rule PDFs load via fetch() from your repo.
   </footer>
 
 <script>
@@ -156,16 +171,24 @@ const $ = (id)=>document.getElementById(id);
 const filePdf = $("filePdf");
 const btnImport = $("btnImport");
 const statusBox = $("importStatus");
+const ruleStatus = $("ruleStatus");
 const resultsBox = $("results");
 const summaryBox = $("summary");
 const btnDownloadDb = $("btnDownloadDb");
 const dbState = $("dbState");
+const ruleSelect = $("ruleSelect");
+
+/** ✅ EDIT THIS LIST to match your repo PDFs */
+const RULE_PDFS = [
+  {label: "Registration Rules (example)", path: "rules/registration_rules.pdf"},
+  {label: "Stamp Rules (example)", path: "rules/stamp_rules.pdf"},
+  {label: "Land Manual (example)", path: "rules/land_manual.pdf"},
+];
 
 function setDbState(msg){ dbState.textContent = "DB: " + msg; }
 
-function logStatus(msg){
-  statusBox.textContent = msg;
-}
+function logStatus(msg){ statusBox.textContent = msg; }
+function logRule(msg){ ruleStatus.textContent = msg; }
 
 function showResults(rows){
   resultsBox.innerHTML = "";
@@ -194,6 +217,7 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS documents (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   filename TEXT NOT NULL,
+  source TEXT NOT NULL,          -- 'github' or 'upload'
   uploaded_at TEXT NOT NULL
 );
 
@@ -246,7 +270,18 @@ async function init(){
   });
   newDb();
   wireUI();
+  fillRuleDropdown();
   setDbState("ready");
+}
+
+function fillRuleDropdown(){
+  ruleSelect.innerHTML = "";
+  RULE_PDFS.forEach((r, i)=>{
+    const opt = document.createElement("option");
+    opt.value = r.path;
+    opt.textContent = r.label + " (" + r.path + ")";
+    ruleSelect.appendChild(opt);
+  });
 }
 
 function newDb(){
@@ -256,13 +291,12 @@ function newDb(){
   btnDownloadDb.disabled = false;
   updateSummary();
   showResults([]);
-  logStatus("DB ready. Upload a PDF to import.");
+  logStatus("DB ready. Upload Jamabandi OR load Rule PDF from GitHub.");
+  logRule("");
   setDbState("ready");
 }
 
-function exportDbBytes(){
-  return db.export();
-}
+function exportDbBytes(){ return db.export(); }
 
 function downloadDb(){
   const bytes = exportDbBytes();
@@ -275,17 +309,17 @@ function downloadDb(){
 }
 
 // ------------------------
-// Heading detection (Jamabandi mode)
+// Heading detection
 // ------------------------
 function detectHeading(line, hindiMode){
   const s = (line||"").trim();
   if (!s) return null;
 
-  // Numbered headings: "121. Something"
+  // Numbered headings
   const num = s.match(/^(\d{1,4})\.\s+(.+)$/);
   if (num) return {key:num[1], heading:s};
 
-  // Hindi Jamabandi headings (extend as needed)
+  // Hindi headings (Jamabandi patterns)
   if (hindiMode){
     if (/^जमाबंदी\b/i.test(s)) return {key:"जमाबंदी", heading:s};
     if (/^खसरा\b/i.test(s)) return {key:"खसरा", heading:s};
@@ -306,40 +340,31 @@ function detectHeading(line, hindiMode){
 // ------------------------
 function extractEntitiesFromLine(line){
   const out = [];
-
-  // khasra numbers (very broad): 1825, 40320, etc.
   const khasraMatches = line.match(/\b\d{3,6}\b/g);
   if (khasraMatches){
     khasraMatches.slice(0, 10).forEach(k=>{
       out.push({type:"khasra", key:k, raw:line});
     });
   }
-
-  // Hindi owner-ish phrases (basic)
   const ownerHindi = line.match(/([अ-ह][अ-ह\s\.]{2,})/g);
   if (ownerHindi){
     ownerHindi.slice(0,2).forEach(name=>{
       out.push({type:"owner", key:normalizeKey(name), raw:name.trim()});
     });
   }
-
-  // English names (basic)
   const ownerEng = line.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g);
   if (ownerEng){
     ownerEng.slice(0,2).forEach(name=>{
       out.push({type:"owner", key:normalizeKey(name), raw:name.trim()});
     });
   }
-
   return out;
 }
 
-// ownership extraction: "Name ... 567/12096 ... 4.68%"
 function extractOwnership(line){
   const res = [];
   const pct = line.match(/(\d+(?:\.\d+)?)\s*%/);
   const frac = line.match(/\b(\d+)\s*\/\s*(\d+)\b/);
-
   const name = line.match(/^([A-Za-zअ-ह][A-Za-zअ-ह\s\.\-]{2,60})/);
 
   if (name && (pct || frac)){
@@ -354,33 +379,34 @@ function extractOwnership(line){
 }
 
 // ------------------------
-// PDF text extraction (pdf.js)
+// PDF extraction helpers
 // ------------------------
-async function extractPdfPages(file){
-  const arrayBuffer = await file.arrayBuffer();
+async function extractPdfPagesFromArrayBuffer(arrayBuffer){
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-
   const pages = [];
   for (let p=1; p<=pdf.numPages; p++){
     const page = await pdf.getPage(p);
     const txt = await page.getTextContent();
     const strings = txt.items.map(it => (it.str||"").trim()).filter(Boolean);
-
-    // join; Jamabandi often has fragmented text -> we still store as lines chunks
     const joined = strings.join(" ");
     const lines = joined
       .split(/\n+/)
-      .flatMap(x => x.split(/\s{2,}/))   // split on big gaps
+      .flatMap(x => x.split(/\s{2,}/))
       .map(s => s.trim())
       .filter(Boolean);
-
     pages.push({page:p, lines});
   }
   return pages;
 }
 
+async function fetchPdfArrayBuffer(path){
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`Cannot fetch ${path} (HTTP ${res.status}). Check file path & GitHub Pages.`);
+  return await res.arrayBuffer();
+}
+
 // ------------------------
-// Import into DB
+// DB utilities
 // ------------------------
 function run(sql, params=[]){
   const stmt = db.prepare(sql);
@@ -400,32 +426,22 @@ function all(sql, params=[]){
   return rows;
 }
 
-async function importPdf(){
-  const file = filePdf.files?.[0];
-  if (!file) return;
-
-  const hindiMode = $("chkHindiMode").checked;
-  const detectHeadings = $("chkDetectHeadings").checked;
-  const extractEntities = $("chkExtractEntities").checked;
-
+async function importPagesIntoDb({filename, source, pages, hindiMode, detectHeadings, extractEntities}){
   setDbState("importing…");
-  logStatus("Reading PDF pages…");
-
-  const pages = await extractPdfPages(file);
 
   // insert document
   const uploadedAt = new Date().toISOString();
-  run(`INSERT INTO documents(filename, uploaded_at) VALUES (?, ?)`, [file.name, uploadedAt]);
+  run(`INSERT INTO documents(filename, source, uploaded_at) VALUES (?, ?, ?)`, [filename, source, uploadedAt]);
   const docRow = all(`SELECT id FROM documents ORDER BY id DESC LIMIT 1`)[0];
-  importedDocId = docRow?.id;
+  const docId = docRow?.id;
+  importedDocId = docId;
 
-  // create initial section
+  // initial section
   run(`INSERT INTO sections(document_id, section_key, heading, page_start, page_end)
        VALUES (?, ?, ?, ?, ?)`,
-       [importedDocId, "PREFACE", "Before first heading", 1, 1]);
+       [docId, "PREFACE", "Before first heading", 1, 1]);
   let currentSectionId = all(`SELECT id FROM sections ORDER BY id DESC LIMIT 1`)[0].id;
 
-  // bulk insert using transaction
   db.run("BEGIN");
   try{
     for (const pg of pages){
@@ -437,103 +453,149 @@ async function importPdf(){
         const line = (rawLine||"").trim();
         if (!line) continue;
 
-        // heading?
         if (detectHeadings){
           const h = detectHeading(line, hindiMode);
           if (h){
-            // close previous section
             run(`UPDATE sections SET page_end=? WHERE id=?`, [pageno, currentSectionId]);
-
-            // start new section
             run(`INSERT INTO sections(document_id, section_key, heading, page_start, page_end)
                  VALUES (?, ?, ?, ?, ?)`,
-                 [importedDocId, h.key, h.heading, pageno, pageno]);
+                 [docId, h.key, h.heading, pageno, pageno]);
             currentSectionId = all(`SELECT id FROM sections ORDER BY id DESC LIMIT 1`)[0].id;
             continue;
           }
         }
 
-        // store content
         run(`INSERT INTO content(section_id, page_no, line_no, text) VALUES (?, ?, ?, ?)`,
             [currentSectionId, pageno, lineNo, line]);
 
-        // entities + ownership
         if (extractEntities){
           const ents = extractEntitiesFromLine(line);
           for (const e of ents){
             run(`INSERT INTO entities(document_id, entity_type, entity_key, raw_text, page_no)
                  VALUES (?, ?, ?, ?, ?)`,
-                 [importedDocId, e.type, e.key, e.raw, pageno]);
+                 [docId, e.type, e.key, e.raw, pageno]);
           }
 
           const owns = extractOwnership(line);
           for (const o of owns){
             run(`INSERT INTO ownership(document_id, owner_name, share_value, share_percent, page_no, raw_line)
                  VALUES (?, ?, ?, ?, ?, ?)`,
-                 [importedDocId, o.owner, o.share_value, o.share_percent, pageno, o.raw_line]);
+                 [docId, o.owner, o.share_value, o.share_percent, pageno, o.raw_line]);
           }
         }
       }
     }
 
-    // close last section
     run(`UPDATE sections SET page_end=? WHERE document_id=? AND id=?`,
-        [pages.length, importedDocId, currentSectionId]);
+        [pages.length, docId, currentSectionId]);
 
     db.run("COMMIT");
   }catch(err){
     db.run("ROLLBACK");
     setDbState("error");
-    logStatus("❌ Import failed: " + err.message);
     throw err;
   }
 
   setDbState("ready");
-  logStatus(`✅ Imported ${file.name} | Pages: ${pages.length} | Document ID: ${importedDocId}`);
   updateSummary();
 
-  // show sample headings
   const hs = all(`SELECT section_key, heading, page_start, page_end
-                  FROM sections WHERE document_id=? ORDER BY id LIMIT 25`, [importedDocId]);
-  showResults(hs.map(x => x));
+                  FROM sections WHERE document_id=? ORDER BY id LIMIT 25`, [docId]);
+  showResults(hs);
+  return docId;
+}
+
+// ------------------------
+// Load Rule PDF from GitHub
+// ------------------------
+async function loadRuleFromGithub(){
+  const path = ruleSelect.value;
+  const label = ruleSelect.options[ruleSelect.selectedIndex]?.textContent || path;
+
+  logRule("Fetching: " + path + " …");
+  try{
+    const buffer = await fetchPdfArrayBuffer(path);
+    logRule("Extracting text from: " + label + " …");
+    const pages = await extractPdfPagesFromArrayBuffer(buffer);
+
+    const docId = await importPagesIntoDb({
+      filename: path,
+      source: "github",
+      pages,
+      hindiMode: false,                 // rule pdf usually English
+      detectHeadings: true,
+      extractEntities: false
+    });
+
+    logRule(`✅ Loaded + imported rule PDF. document_id=${docId} | pages=${pages.length}`);
+  }catch(e){
+    logRule("❌ " + e.message);
+  }
+}
+
+// ------------------------
+// Import Jamabandi upload
+// ------------------------
+async function importJamabandiUpload(){
+  const file = filePdf.files?.[0];
+  if (!file) return;
+
+  const hindiMode = $("chkHindiMode").checked;
+  const detectHeadings = $("chkDetectHeadings").checked;
+  const extractEntities = $("chkExtractEntities").checked;
+
+  setDbState("importing…");
+  logStatus("Reading PDF pages…");
+
+  const buffer = await file.arrayBuffer();
+  const pages = await extractPdfPagesFromArrayBuffer(buffer);
+
+  try{
+    const docId = await importPagesIntoDb({
+      filename: file.name,
+      source: "upload",
+      pages,
+      hindiMode,
+      detectHeadings,
+      extractEntities
+    });
+
+    logStatus(`✅ Imported Jamabandi: ${file.name} | pages=${pages.length} | document_id=${docId}`);
+  }catch(e){
+    logStatus("❌ Import failed: " + e.message);
+  } finally {
+    setDbState("ready");
+  }
 }
 
 function updateSummary(){
-  if (!db){
-    summaryBox.textContent = "No DB loaded.";
-    return;
-  }
   const docs = all(`SELECT COUNT(*) as n FROM documents`)[0].n;
   const secs = all(`SELECT COUNT(*) as n FROM sections`)[0].n;
   const lines = all(`SELECT COUNT(*) as n FROM content`)[0].n;
   const ents = all(`SELECT COUNT(*) as n FROM entities`)[0].n;
   const owns = all(`SELECT COUNT(*) as n FROM ownership`)[0].n;
-
   summaryBox.textContent =
-    `Documents: ${docs}\nSections: ${secs}\nContent lines: ${lines}\nEntities: ${ents}\nOwnership rows: ${owns}\nActive document_id: ${importedDocId ?? "none"}`;
+    `Documents: ${docs}\nSections: ${secs}\nContent lines: ${lines}\nEntities: ${ents}\nOwnership rows: ${owns}\nLast imported document_id: ${importedDocId ?? "none"}`;
 }
 
 // ------------------------
-// Query APIs (UI buttons)
+// Queries
 // ------------------------
 function fetchByHeading(){
-  if (!importedDocId) return showResults(["Import a PDF first."]);
+  if (!importedDocId) return showResults(["Import/load a PDF first."]);
   const key = $("headingKey").value.trim();
   if (!key) return showResults(["Enter a heading key."]);
 
-  // find section(s) whose key/heading matches
   const sec = all(
-    `SELECT id, section_key, heading, page_start, page_end
+    `SELECT id, document_id, section_key, heading, page_start, page_end
      FROM sections
-     WHERE document_id=?
-       AND (LOWER(section_key)=LOWER(?) OR heading LIKE ?)
-     ORDER BY id LIMIT 20`,
-    [importedDocId, key, `%${key}%`]
+     WHERE (LOWER(section_key)=LOWER(?) OR heading LIKE ?)
+     ORDER BY document_id DESC, id ASC
+     LIMIT 10`,
+    [key, `%${key}%`]
   );
+  if (sec.length === 0) return showResults(["No section found."]);
 
-  if (sec.length === 0) return showResults(["No section found. Try: जमाबंदी / खसरा / मालिक / खतौनी"]);
-
-  // fetch content lines of first match (to keep UI light)
   const sid = sec[0].id;
   const lines = all(
     `SELECT page_no, line_no, text
@@ -551,70 +613,62 @@ function fetchByHeading(){
 }
 
 function searchOwner(){
-  if (!importedDocId) return showResults(["Import a PDF first."]);
+  if (!importedDocId) return showResults(["Import/load a PDF first."]);
   const name = $("ownerName").value.trim();
   if (!name) return showResults(["Enter owner name."]);
 
-  // 1) ownership table (best)
   const o = all(
-    `SELECT owner_name, share_value, share_percent, page_no, raw_line
+    `SELECT document_id, owner_name, share_value, share_percent, page_no, raw_line
      FROM ownership
-     WHERE document_id=?
-       AND owner_name LIKE ?
-     ORDER BY page_no
+     WHERE owner_name LIKE ?
+     ORDER BY document_id DESC, page_no
      LIMIT 80`,
-    [importedDocId, `%${name}%`]
+    [`%${name}%`]
   );
 
-  // 2) fallback: content search
   const c = all(
-    `SELECT s.section_key, c.page_no, c.text
+    `SELECT s.document_id, s.section_key, c.page_no, c.text
      FROM content c
-     JOIN sections s ON s.id = c.section_id
-     WHERE s.document_id=?
-       AND c.text LIKE ?
-     ORDER BY c.page_no
+     JOIN sections s ON s.id=c.section_id
+     WHERE c.text LIKE ?
+     ORDER BY s.document_id DESC, c.page_no
      LIMIT 120`,
-    [importedDocId, `%${name}%`]
+    [`%${name}%`]
   );
 
   const out = [];
   if (o.length) out.push({OWNERSHIP_MATCHES: o.length}, ...o);
-  if (c.length) out.push({CONTENT_MATCHES: c.length}, ...c.map(x=>`[${x.section_key}] p${x.page_no}: ${x.text}`));
-
-  showResults(out.length ? out : ["No match found. Try alternate spelling (Hindi/English)."]);
+  if (c.length) out.push({CONTENT_MATCHES: c.length}, ...c.map(x=>`[doc${x.document_id} ${x.section_key}] p${x.page_no}: ${x.text}`));
+  showResults(out.length ? out : ["No match found."]);
 }
 
 function searchKhasra(){
-  if (!importedDocId) return showResults(["Import a PDF first."]);
+  if (!importedDocId) return showResults(["Import/load a PDF first."]);
   const k = $("khasraNo").value.trim();
   if (!k) return showResults(["Enter khasra number."]);
 
   const e = all(
-    `SELECT entity_key, raw_text, page_no
+    `SELECT document_id, entity_key, raw_text, page_no
      FROM entities
-     WHERE document_id=?
-       AND entity_type='khasra'
-       AND entity_key=?
-     ORDER BY page_no
+     WHERE entity_type='khasra' AND entity_key=?
+     ORDER BY document_id DESC, page_no
      LIMIT 80`,
-    [importedDocId, k]
+    [k]
   );
 
   const c = all(
-    `SELECT s.section_key, c.page_no, c.text
+    `SELECT s.document_id, s.section_key, c.page_no, c.text
      FROM content c
-     JOIN sections s ON s.id = c.section_id
-     WHERE s.document_id=?
-       AND c.text LIKE ?
-     ORDER BY c.page_no
+     JOIN sections s ON s.id=c.section_id
+     WHERE c.text LIKE ?
+     ORDER BY s.document_id DESC, c.page_no
      LIMIT 120`,
-    [importedDocId, `%${k}%`]
+    [`%${k}%`]
   );
 
   const out = [];
   if (e.length) out.push({ENTITY_MATCHES: e.length}, ...e);
-  if (c.length) out.push({CONTENT_MATCHES: c.length}, ...c.map(x=>`[${x.section_key}] p${x.page_no}: ${x.text}`));
+  if (c.length) out.push({CONTENT_MATCHES: c.length}, ...c.map(x=>`[doc${x.document_id} ${x.section_key}] p${x.page_no}: ${x.text}`));
   showResults(out.length ? out : ["No match found."]);
 }
 
@@ -636,19 +690,17 @@ function wireUI(){
   $("btnNewDb").addEventListener("click", newDb);
   $("btnDownloadDb").addEventListener("click", downloadDb);
 
+  $("btnLoadRule").addEventListener("click", loadRuleFromGithub);
+
   filePdf.addEventListener("change", ()=>{
     btnImport.disabled = !filePdf.files?.length;
-    logStatus(filePdf.files?.length ? "PDF selected. Click Import." : "Select a PDF.");
+    logStatus(filePdf.files?.length ? "Jamabandi PDF selected. Click Import." : "Select Jamabandi PDF.");
   });
 
   btnImport.addEventListener("click", async ()=>{
-    try{
-      btnImport.disabled = true;
-      logStatus("Starting import…");
-      await importPdf();
-    } finally {
-      btnImport.disabled = false;
-    }
+    btnImport.disabled = true;
+    try{ await importJamabandiUpload(); }
+    finally{ btnImport.disabled = false; }
   });
 
   $("btnGetHeading").addEventListener("click", fetchByHeading);
@@ -656,7 +708,6 @@ function wireUI(){
   $("btnKhasra").addEventListener("click", searchKhasra);
   $("btnRunSQL").addEventListener("click", runSQL);
 
-  // Tabs
   document.querySelectorAll(".tab").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       document.querySelectorAll(".tab").forEach(b=>b.classList.remove("active"));
@@ -665,11 +716,8 @@ function wireUI(){
       $(btn.dataset.tab).classList.add("active");
     });
   });
-
-  btnDownloadDb.disabled = false;
 }
 
-// Start
 init();
 </script>
 </body>
